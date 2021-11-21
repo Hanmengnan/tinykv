@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
@@ -13,81 +14,104 @@ import (
 // RawGet return the corresponding Get response based on RawGetRequest's CF and Key fields
 func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kvrpcpb.RawGetResponse, error) {
 	// Your Code Here (1).
-	reader, err := server.storage.Reader(req.Context)
-	defer reader.Close()
+	reader, err := server.storage.Reader(nil)
 	if err != nil {
 		return &kvrpcpb.RawGetResponse{
 			Error: err.Error(),
 		}, err
 	}
 	value, err := reader.GetCF(req.Cf, req.Key)
-	result := kvrpcpb.RawGetResponse{
-		Value: value,
-	}
-	// check not found error
-	if value == nil {
-		result.NotFound = true
+	if err == nil {
+		if value == nil {
+			return &kvrpcpb.RawGetResponse{
+				NotFound: true,
+			}, nil
+		} else {
+			return &kvrpcpb.RawGetResponse{
+				Value: value,
+			}, nil
+		}
+	} else {
+		return &kvrpcpb.RawGetResponse{
+			Error: err.Error(),
+		}, err
 	}
 
-	return &result, err
 }
 
 // RawPut puts the target data into storage and returns the corresponding response
 func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kvrpcpb.RawPutResponse, error) {
 	// Your Code Here (1).
 	// Hint: Consider using Storage.Modify to store data to be modified
-	var data []storage.Modify
-	data = append(data, storage.Modify{
-		Data: storage.Put{
-			Cf:    req.Cf,
-			Key:   req.Key,
-			Value: req.Value,
-		},
-	})
+	modify := storage.Modify{}
+	modify.Data = storage.Put{
+		Key:   req.Key,
+		Value: req.Value,
+		Cf:    req.Cf,
+	}
 
-	err := server.storage.Write(req.Context, data)
-	result := &kvrpcpb.RawPutResponse{}
-	return result, err
+	err := server.storage.Write(nil, []storage.Modify{modify})
+	if err != nil {
+		return &kvrpcpb.RawPutResponse{
+			Error: err.Error(),
+		}, err
+	}
+	return &kvrpcpb.RawPutResponse{}, nil
 }
 
 // RawDelete delete the target data from storage and returns the corresponding response
 func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest) (*kvrpcpb.RawDeleteResponse, error) {
 	// Your Code Here (1).
 	// Hint: Consider using Storage.Modify to store data to be deleted
-	var data []storage.Modify
-	data = append(data, storage.Modify{
-		Data: storage.Delete{
-			Cf:  req.Cf,
-			Key: req.Key,
-		},
-	})
+	modify := storage.Modify{}
+	modify.Data = storage.Delete{
+		Key: req.Key,
+		Cf:  req.Cf,
+	}
 
-	err := server.storage.Write(req.Context, data)
-	result := &kvrpcpb.RawDeleteResponse{}
-	return result, err
+	err := server.storage.Write(nil, []storage.Modify{modify})
+	if err != nil {
+		return &kvrpcpb.RawDeleteResponse{
+			Error: err.Error(),
+		}, err
+	}
+	return &kvrpcpb.RawDeleteResponse{}, nil
 }
 
 // RawScan scan the data starting from the start key up to limit. and return the corresponding result
 func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*kvrpcpb.RawScanResponse, error) {
 	// Your Code Here (1).
 	// Hint: Consider using reader.IterCF
-	reader, err := server.storage.Reader(req.Context)
-	defer reader.Close()
-	iter := reader.IterCF(req.Cf)
-	iter.Seek(req.StartKey)
-	counter := req.Limit
-	var kvs []*kvrpcpb.KvPair
-	for iter.Valid() && counter > 0 {
-		item := iter.Item()
-		value, _ := item.Value()
-		kvs = append(kvs, &kvrpcpb.KvPair{
-			Key:   item.Key(),
-			Value: value,
-		})
-		iter.Next()
-		counter -= 1
+	cf := req.Cf
+	limit := req.Limit
+
+	reader, err := server.storage.Reader(nil)
+	if err != nil {
+		return &kvrpcpb.RawScanResponse{
+			Error: err.Error(),
+		}, err
 	}
+	iter := reader.IterCF(cf)
+	kvPairs := make([](*kvrpcpb.KvPair), 0)
+
+	for i := 0; i < int(limit) && iter.Valid(); i++ {
+		item := iter.Item()
+		key := item.Key()
+		value, err := item.Value()
+
+		if err != nil {
+			log.Println(err)
+		} else {
+			kvPairs = append(kvPairs, &kvrpcpb.KvPair{
+				Key:   key,
+				Value: value,
+			})
+		}
+		iter.Next()
+	}
+	iter.Close()
+
 	return &kvrpcpb.RawScanResponse{
-		Kvs: kvs,
-	}, err
+		Kvs: kvPairs,
+	}, nil
 }
