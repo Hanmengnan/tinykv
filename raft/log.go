@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,13 +52,27 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+
+	firstIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	hardState, _, _ := storage.InitialState()
+	first, _ := storage.FirstIndex()
+	last, _ := storage.LastIndex()
+	entries, _ := storage.Entries(first, last+1)
+
+	return &RaftLog{
+		storage:    storage,
+		committed:  hardState.Commit,
+		applied:    first - 1,
+		stabled:    last,
+		entries:    entries,
+		firstIndex: first,
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -69,23 +85,61 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) > 0 {
+		index := int(l.stabled-l.FirstIndex()) + 1
+		if index < 0 || index > len(l.entries) {
+			return []pb.Entry{}
+		} else {
+			return l.entries[index:]
+		}
+	}
+	return []pb.Entry{}
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	return l.entries[l.applied-l.firstIndex+1 : min(l.committed-l.firstIndex+1, uint64(len(l.entries)))]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	if len(l.entries) > 0 {
+		return l.entries[len(l.entries)-1].Index
+	} else {
+		return l.stabled
+	}
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	if len(l.entries) > 0 {
+		return l.entries[0].Index
+	}
+	index, _ := l.storage.FirstIndex()
+	// -1 的原因是storage对FirstIndex()的实现中对index进行了+1
+	return index - 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+	if len(l.entries) > 0 && i >= l.firstIndex {
+		if i > l.LastIndex() {
+			return 0, ErrUnavailable
+		}
+		return l.entries[i-l.firstIndex].Term, nil
+	}
+	return l.storage.Term(i)
+}
+
+func (l *RaftLog) Append(newEntries []pb.Entry) {
+	for _, item := range newEntries {
+		l.entries = append(l.entries, pb.Entry{
+			EntryType: item.EntryType,
+			Term:      item.Term,
+			Index:     item.Index,
+			Data:      item.Data,
+		})
+	}
 }
