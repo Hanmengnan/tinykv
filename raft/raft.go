@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"log"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -166,19 +167,13 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	hardState, _, err := c.Storage.InitialState()
+	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err.Error())
 	}
 
 	progresses := make(map[uint64]*Progress)
-
 	votes := make(map[uint64]bool)
-
-	for _, item := range c.peers {
-		progresses[item] = &Progress{0, 0}
-		votes[item] = false
-	}
 
 	node := Raft{
 		id:               c.ID,
@@ -195,6 +190,15 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		electionElapsed:  0,
 	}
+
+	if c.peers == nil {
+		c.peers = confState.Nodes
+	}
+	lastIndex := node.RaftLog.LastIndex()
+	for _, item := range c.peers {
+		node.Prs[item] = &Progress{Next: lastIndex + 1, Match: 0}
+	}
+
 	return &node
 }
 
@@ -421,10 +425,11 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 }
 
 func (r *Raft) sendRequestVote() {
+	log.Printf("i am node %d, i start sending RequestVote msg", r.id)
 	if r.State == StateCandidate {
 		prevLogIndex := r.RaftLog.LastIndex()
 		prevLogTerm, _ := r.RaftLog.Term(prevLogIndex)
-
+		log.Printf("my peers is %+v", r.Prs)
 		for index := range r.Prs {
 			if index != r.id {
 				r.msgs = append(r.msgs, pb.Message{
@@ -442,7 +447,7 @@ func (r *Raft) sendRequestVote() {
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
-	// log.Printf("i am node %d term %d, now node %d term %d index %d request vode", r.id, r.Term, m.From, m.Term, m.Index)
+	log.Printf("i am node %d term %d, now node %d term %d index %d request vode", r.id, r.Term, m.From, m.Term, m.Index)
 
 	if m.Term < r.Term {
 		r.sendRequestVoteResponse(m.From, true)
@@ -456,11 +461,11 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		if lastTerm < m.LogTerm || (lastTerm == m.LogTerm && m.Index >= lastIndex) {
 			r.Vote = m.From
 			r.sendRequestVoteResponse(m.From, false)
-			// log.Printf("my vote for %d", m.From)
+			log.Printf("my vote for %d", m.From)
 			return
 		}
 	}
-	// log.Printf("my don't vote for %d", m.From)
+	log.Printf("my don't vote for %d", m.From)
 	r.sendRequestVoteResponse(m.From, true)
 
 }
@@ -556,7 +561,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-
+	log.Printf("i have become leader, i am node %d", r.id)
 	r.State = StateLeader
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
@@ -635,11 +640,9 @@ func (r *Raft) Step(m pb.Message) error {
 }
 
 func (r *Raft) handleMsgUp() {
-	if _, ok := r.Prs[r.id]; !ok {
-		return
-	}
+	log.Printf("I receive Msgup msg, i am node %d", r.id)
 	r.becomeCandidate()
-	// log.Printf("i am node %d ,now in term %d ,i start vote", r.id, r.Term)
+	log.Printf("i am node %d ,now in term %d ,i start vote", r.id, r.Term)
 	r.sendRequestVote()
 }
 
@@ -650,7 +653,8 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 }
 
 func (r *Raft) handlePropose(m pb.Message) {
-	// log.Printf("my committed is %d", r.RaftLog.committed)
+	log.Printf("I receive Propose msg, i am node %d", r.id)
+	log.Printf("my committed is %d", r.RaftLog.committed)
 	for _, e := range m.Entries {
 		r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
 			EntryType: e.EntryType,
