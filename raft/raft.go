@@ -261,7 +261,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		if err != nil && err == ErrCompacted {
 			r.sendAppendResponse(m.From, false)
 			return
-
 		}
 
 		// 消息Term与本地记录不一致
