@@ -691,21 +691,6 @@ func (r *Raft) GetHardState() pb.HardState {
 	}
 }
 
-func (r *Raft) GetSoftState() *SoftState {
-	return &SoftState{
-		Lead:      r.Lead,
-		RaftState: r.State,
-	}
-}
-
-func (r *Raft) GetHardState() pb.HardState {
-	return pb.HardState{
-		Term:   r.Term,
-		Vote:   r.Vote,
-		Commit: r.RaftLog.committed,
-	}
-}
-
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
