@@ -156,11 +156,9 @@ func (rn *RawNode) Ready() Ready {
 		Messages:         raft.msgs,
 	}
 	if rn.IsSoftStateChanged() {
-		rn.NodeSoftState = raft.GetSoftState()
 		ready.SoftState = raft.GetSoftState()
 	}
 	if rn.IsHardStateChanged() {
-		// 这里暂时不对 HardState 修改
 		ready.HardState = raft.GetHardState()
 	}
 	rn.Raft.msgs = make([]pb.Message, 0)
@@ -191,6 +189,9 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	if rn.IsSoftStateChanged() {
+		rn.NodeSoftState = rd.SoftState
+	}
 	if rn.IsHardStateChanged() {
 		rn.NodeHardState = rd.HardState
 	}

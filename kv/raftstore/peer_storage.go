@@ -314,7 +314,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		if err != nil {
 			return err
 		}
-		// preFirstIndex 指的是stabled的最后一条日志
+		// preLastIndex 指的是stabled的最后一条日志
 		preLastIndex, err := ps.LastIndex()
 		if err != nil {
 			return err
@@ -370,17 +370,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Your Code Here (2B/2C).
 	var result *ApplySnapResult
 	var err error = nil
-
-	if !raft.IsEmptySnap(&ready.Snapshot) {
-		raftWB := new(engine_util.WriteBatch)
-		kvWB := new(engine_util.WriteBatch)
-		result, _ = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
-		err = kvWB.WriteToDB(ps.Engines.Kv)
-		err = raftWB.WriteToDB(ps.Engines.Raft)
-	}
-	raftWB := new(engine_util.WriteBatch)
-	err = ps.Append(ready.Entries, raftWB)
-	// update ps.raftState
+	raftWriteBatch := new(engine_util.WriteBatch)
+	ps.Append(ready.Entries, raftWriteBatch)
 	if len(ready.Entries) > 0 {
 		LastIndex := ready.Entries[len(ready.Entries)-1].Index
 		if LastIndex > ps.raftState.LastIndex {
@@ -391,8 +382,8 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-	err = raftWB.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
-	err = raftWB.WriteToDB(ps.Engines.Raft)
+	err = raftWriteBatch.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
+	err = raftWriteBatch.WriteToDB(ps.Engines.Raft)
 	return result, err
 }
 
