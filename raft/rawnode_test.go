@@ -16,6 +16,7 @@ package raft
 
 import (
 	"bytes"
+	"log"
 	"reflect"
 	"testing"
 
@@ -205,6 +206,7 @@ func TestRawNodeRestart2AC(t *testing.T) {
 		t.Fatal(err)
 	}
 	rd := rawNode.Ready()
+	log.Println(reflect.DeepEqual(rd.Messages, want.Messages))
 	if !reflect.DeepEqual(rd, want) {
 		t.Errorf("g = %+v,\n             w   %+v", rd, want)
 	}
