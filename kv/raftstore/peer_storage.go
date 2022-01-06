@@ -314,7 +314,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		if err != nil {
 			return err
 		}
-		// preLastIndex 指的是stabled的最后一条日志
+		// preLastIndex 指的是not-truncated的最后一条日志
 		preLastIndex, err := ps.LastIndex()
 		if err != nil {
 			return err
