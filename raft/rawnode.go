@@ -153,12 +153,12 @@ func (rn *RawNode) Ready() Ready {
 	ready := Ready{
 		Entries:          raft.RaftLog.unstableEntries(),
 		CommittedEntries: raft.RaftLog.nextEnts(),
-		Messages:         raft.msgs,
 	}
 	if rn.IsSoftStateChanged() {
 		ready.SoftState = raft.GetSoftState()
 	}
 	if rn.IsHardStateChanged() {
+		// 这里暂时不对 HardState 修改
 		ready.HardState = raft.GetHardState()
 	}
 	rn.Raft.msgs = make([]pb.Message, 0)
@@ -193,7 +193,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.NodeSoftState = rd.SoftState
 	}
 	if rn.IsHardStateChanged() {
-		rn.NodeHardState = rd.HardState
+		rn.NodeHardState = rn.Raft.GetHardState()
 	}
 	if len(rd.Entries) > 0 {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
