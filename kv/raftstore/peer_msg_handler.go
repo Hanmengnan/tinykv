@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
-	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -48,23 +47,90 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// Your Code Here (2B).
 	if d.peer.RaftGroup.HasReady() {
 		ready := d.peer.RaftGroup.Ready()
-		res, err := d.peerStorage.SaveReadyState(&ready)
+		_, err := d.peerStorage.SaveReadyState(&ready)
 		if err != nil {
 			log.Fatal(err)
-		}
-		if res != nil {
-			d.peerStorage.SetRegion(res.Region)
-			d.ctx.storeMeta.Lock()
-			d.ctx.storeMeta.regions[d.Region().Id] = d.Region()
-			d.ctx.storeMeta.Unlock()
 		}
 		if len(ready.Messages) > 0 {
 			d.Send(d.ctx.trans, ready.Messages)
 		}
 		if len(ready.CommittedEntries) > 0 {
 			for _, entry := range ready.CommittedEntries {
+				msg := &raft_cmdpb.RaftCmdRequest{}
+				err := msg.Unmarshal(entry.Data)
+				if err != nil {
+					panic(err)
+				}
 				batch := new(engine_util.WriteBatch)
-				d.handle(&entry, batch)
+				if msg.AdminRequest == nil {
+					if len(msg.Requests) > 0 {
+						item := msg.Requests[0]
+						switch item.CmdType {
+						case raft_cmdpb.CmdType_Get:
+						case raft_cmdpb.CmdType_Put:
+							batch.SetCF(item.Put.Cf, item.Put.Key, item.Put.Value)
+						case raft_cmdpb.CmdType_Delete:
+							batch.DeleteCF(item.Delete.Cf, item.Delete.Key)
+						case raft_cmdpb.CmdType_Snap:
+						}
+						if len(d.proposals) > 0 {
+							p := d.proposals[0]
+							for p.index < entry.Index {
+								p.cb.Done(ErrResp(&util.ErrStaleCommand{}))
+								d.proposals = d.proposals[1:]
+								if len(d.proposals) == 0 {
+									return
+								}
+								p = d.proposals[0]
+							}
+							if p.index == entry.Index {
+								if p.term != entry.Term {
+									NotifyStaleReq(entry.Term, p.cb)
+								} else {
+									resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
+									switch item.CmdType {
+									case raft_cmdpb.CmdType_Get:
+										val, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, item.Get.Cf, item.Get.Key)
+										resp.Responses = []*raft_cmdpb.Response{
+											{
+												CmdType: raft_cmdpb.CmdType_Get,
+												Get:     &raft_cmdpb.GetResponse{Value: val},
+											},
+										}
+									case raft_cmdpb.CmdType_Put:
+										resp.Responses = []*raft_cmdpb.Response{
+											{
+												CmdType: raft_cmdpb.CmdType_Put,
+												Put:     &raft_cmdpb.PutResponse{},
+											},
+										}
+									case raft_cmdpb.CmdType_Delete:
+										resp.Responses = []*raft_cmdpb.Response{
+											{
+												CmdType: raft_cmdpb.CmdType_Delete,
+												Delete:  &raft_cmdpb.DeleteResponse{},
+											},
+										}
+									case raft_cmdpb.CmdType_Snap:
+										if msg.Header.RegionEpoch.Version != d.Region().RegionEpoch.Version {
+											p.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
+											return
+										}
+										resp.Responses = []*raft_cmdpb.Response{
+											{
+												CmdType: raft_cmdpb.CmdType_Snap,
+												Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
+											},
+										}
+										p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+									}
+									p.cb.Done(resp)
+								}
+								d.proposals = d.proposals[1:]
+							}
+						}
+					}
+				}
 				d.peerStorage.applyState.AppliedIndex = entry.Index
 				err = batch.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
 				if err != nil {
@@ -86,83 +152,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 		d.RaftGroup.Advance(ready)
-	}
-}
-
-func (d *peerMsgHandler) handle(entry *eraftpb.Entry, kvWB *engine_util.WriteBatch) {
-	msg := &raft_cmdpb.RaftCmdRequest{}
-	err := msg.Unmarshal(entry.Data)
-	if err != nil {
-		panic(err)
-	}
-	if msg.AdminRequest == nil {
-		if len(msg.Requests) > 0 {
-			item := msg.Requests[0]
-			switch item.CmdType {
-			case raft_cmdpb.CmdType_Get:
-			case raft_cmdpb.CmdType_Put:
-				kvWB.SetCF(item.Put.Cf, item.Put.Key, item.Put.Value)
-			case raft_cmdpb.CmdType_Delete:
-				kvWB.DeleteCF(item.Delete.Cf, item.Delete.Key)
-			case raft_cmdpb.CmdType_Snap:
-			}
-			if len(d.proposals) > 0 {
-				p := d.proposals[0]
-				for p.index < entry.Index {
-					p.cb.Done(ErrResp(&util.ErrStaleCommand{}))
-					d.proposals = d.proposals[1:]
-					if len(d.proposals) == 0 {
-						return
-					}
-					p = d.proposals[0]
-				}
-				if p.index == entry.Index {
-					if p.term != entry.Term {
-						NotifyStaleReq(entry.Term, p.cb)
-					} else {
-						resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
-						switch item.CmdType {
-						case raft_cmdpb.CmdType_Get:
-							val, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, item.Get.Cf, item.Get.Key)
-							resp.Responses = []*raft_cmdpb.Response{
-								{
-									CmdType: raft_cmdpb.CmdType_Get,
-									Get:     &raft_cmdpb.GetResponse{Value: val},
-								},
-							}
-						case raft_cmdpb.CmdType_Put:
-							resp.Responses = []*raft_cmdpb.Response{
-								{
-									CmdType: raft_cmdpb.CmdType_Put,
-									Put:     &raft_cmdpb.PutResponse{},
-								},
-							}
-						case raft_cmdpb.CmdType_Delete:
-							resp.Responses = []*raft_cmdpb.Response{
-								{
-									CmdType: raft_cmdpb.CmdType_Delete,
-									Delete:  &raft_cmdpb.DeleteResponse{},
-								},
-							}
-						case raft_cmdpb.CmdType_Snap:
-							if msg.Header.RegionEpoch.Version != d.Region().RegionEpoch.Version {
-								p.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
-								return
-							}
-							resp.Responses = []*raft_cmdpb.Response{
-								{
-									CmdType: raft_cmdpb.CmdType_Snap,
-									Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
-								},
-							}
-							p.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
-						}
-						p.cb.Done(resp)
-					}
-					d.proposals = d.proposals[1:]
-				}
-			}
-		}
 	}
 }
 
@@ -235,7 +224,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	//fmt.Println(">>proposeRaftCommand<<", msg.AdminRequest, msg.Requests)
 	if msg.AdminRequest != nil {
 		switch msg.AdminRequest.CmdType {
 		case raft_cmdpb.AdminCmdType_ChangePeer:
