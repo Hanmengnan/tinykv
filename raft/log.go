@@ -53,7 +53,7 @@ type RaftLog struct {
 
 	// Your Data Here (2A).
 
-	firstIndex uint64
+	first uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -63,15 +63,15 @@ func newLog(storage Storage) *RaftLog {
 	hardState, _, _ := storage.InitialState()
 	first, _ := storage.FirstIndex()
 	last, _ := storage.LastIndex()
-	entries, _ := storage.Entries(first, last+1)
+	entries, _ := storage.Entries(first, last+1) // [first , last]
 
 	return &RaftLog{
-		storage:    storage,
-		committed:  hardState.Commit,
-		applied:    first - 1,
-		stabled:    last,
-		entries:    entries,
-		firstIndex: first,
+		storage:   storage,
+		committed: hardState.Commit,
+		applied:   first - 1, // 上文注释中提到：刚刚commits和applied到最新的快照中，因此applied指向的就是比storage中再older的上一条
+		stabled:   last,
+		entries:   entries,
+		first:     first,
 	}
 }
 
@@ -86,7 +86,7 @@ func (l *RaftLog) maybeCompact() {
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	if len(l.entries) > 0 {
-		index := int(l.stabled-l.FirstIndex()) + 1
+		index := int(l.stabled + 1 - l.first) // stabled+1为unstabled的第一条日志项的索引
 		if index < 0 || index > len(l.entries) {
 			return []pb.Entry{}
 		} else {
@@ -99,7 +99,10 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return l.entries[l.applied-l.firstIndex+1 : min(l.committed-l.firstIndex+1, uint64(len(l.entries)))]
+	unAppliedIndex := l.applied - l.first + 1
+	unCommittedIndex := l.committed - l.first + 1
+
+	return l.entries[unAppliedIndex:unCommittedIndex]
 }
 
 // LastIndex return the last index of the log entries
@@ -115,22 +118,27 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) FirstIndex() uint64 {
 	if len(l.entries) > 0 {
 		return l.entries[0].Index
+	} else {
+		return l.first
 	}
-	index, _ := l.storage.FirstIndex()
-	// -1 的原因是storage对FirstIndex()的实现中对index进行了+1
-	return index - 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if len(l.entries) > 0 && i >= l.firstIndex {
-		if i > l.LastIndex() {
-			return 0, ErrUnavailable
+	first := l.FirstIndex()
+	last := l.LastIndex()
+
+	if i > last {
+		return 0, ErrUnavailable
+	} else {
+		if i < first {
+			return l.storage.Term(i)
+		} else {
+			index := i - l.first
+			return l.entries[index].Term, nil
 		}
-		return l.entries[i-l.firstIndex].Term, nil
 	}
-	return l.storage.Term(i)
 }
 
 func (l *RaftLog) Append(newEntries []pb.Entry) {
@@ -141,5 +149,37 @@ func (l *RaftLog) Append(newEntries []pb.Entry) {
 			Index:     item.Index,
 			Data:      item.Data,
 		})
+	}
+}
+
+func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
+	first := l.FirstIndex()
+	last := l.LastIndex()
+
+	if lo > last { // 下界越界
+		return []pb.Entry{}, ErrUnavailable
+	} else {
+		if hi < first { // 取的是stabled的日志
+			entry, err := l.storage.Entries(lo, hi)
+			if err != nil { // storage 也无法取出这些日志
+				return []pb.Entry{}, err
+			} else {
+				return entry, nil
+			}
+		} else {
+			hiIndex := hi - l.first
+			if lo < first { // 下界需要去storage中去取
+				subEntries, err := l.storage.Entries(lo, first)
+				if err != nil {
+					return []pb.Entry{}, err // storage 也无法取出这些日志
+				} else {
+					subEntries = append(subEntries, l.entries[first:hiIndex+1]...)
+					return subEntries, nil
+				}
+			} else {
+				loIndex := lo - l.first
+				return l.entries[loIndex : hiIndex+1], nil
+			}
+		}
 	}
 }
