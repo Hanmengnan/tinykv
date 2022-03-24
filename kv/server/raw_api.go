@@ -21,16 +21,14 @@ func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kv
 		}, err
 	}
 	value, err := reader.GetCF(req.Cf, req.Key)
-	if err == nil {
-		if value == nil {
-			return &kvrpcpb.RawGetResponse{
-				NotFound: true,
-			}, nil
-		} else {
-			return &kvrpcpb.RawGetResponse{
-				Value: value,
-			}, nil
-		}
+	if err == nil && value == nil {
+		return &kvrpcpb.RawGetResponse{
+			NotFound: true,
+		}, nil
+	} else if err == nil && value != nil {
+		return &kvrpcpb.RawGetResponse{
+			Value: value,
+		}, nil
 	} else {
 		return &kvrpcpb.RawGetResponse{
 			Error: err.Error(),
@@ -98,7 +96,6 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 		item := iter.Item()
 		key := item.Key()
 		value, err := item.Value()
-
 		if err != nil {
 			log.Println(err)
 		} else {
