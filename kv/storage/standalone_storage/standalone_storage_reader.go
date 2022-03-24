@@ -6,15 +6,15 @@ import (
 )
 
 type StandaloneStorageReader struct {
-	Txn *badger.Txn
+	txn *badger.Txn
 }
 
 func NewStandaloneStorageReader(txn *badger.Txn) *StandaloneStorageReader {
-	return &StandaloneStorageReader{Txn: txn}
+	return &StandaloneStorageReader{txn: txn}
 }
 
 func (r *StandaloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) {
-	val, err := engine_util.GetCFFromTxn(r.Txn, cf, key)
+	val, err := engine_util.GetCFFromTxn(r.txn, cf, key)
 	if err == badger.ErrKeyNotFound {
 		return nil, nil
 	} else if err != nil {
@@ -24,11 +24,11 @@ func (r *StandaloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) {
 }
 
 func (r *StandaloneStorageReader) IterCF(cf string) engine_util.DBIterator {
-	iter := engine_util.NewCFIterator(cf, r.Txn)
+	iter := engine_util.NewCFIterator(cf, r.txn)
 	iter.Rewind()
 	return iter
 }
 
 func (r *StandaloneStorageReader) Close() {
-	r.Txn.Discard()
+	r.txn.Discard()
 }

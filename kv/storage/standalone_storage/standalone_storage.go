@@ -16,34 +16,33 @@ import (
 type StandAloneStorage struct {
 	// Your Data Here (1).
 	conf *config.Config // 配置文件
-	KvDB *badger.DB     // 底层数据库
+	db   *badger.DB     // 底层存储引擎
 }
 
 func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	// Your Code Here (1).
-	return &StandAloneStorage{conf: conf, KvDB: nil}
+	opts := badger.DefaultOptions
+	opts.Dir = conf.DBPath
+	opts.ValueDir = opts.Dir
+
+	if err := os.MkdirAll(opts.Dir, os.ModePerm); err != nil {
+		log.Fatal(err)
+	}
+	db, err := badger.Open(opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return &StandAloneStorage{conf: conf, db: db}
 }
 
 func (s *StandAloneStorage) Start() error {
 	// Your Code Here (1).
-	dbPath := s.conf.DBPath
-	opts := badger.DefaultOptions
-	opts.Dir = dbPath
-	opts.ValueDir = opts.Dir
-	if err := os.MkdirAll(opts.Dir, os.ModePerm); err != nil {
-		log.Fatal(err)
-	}
-	kvDB, err := badger.Open(opts)
-	if err != nil {
-		log.Fatal(err)
-	}
-	s.KvDB = kvDB
 	return nil
 }
 
 func (s *StandAloneStorage) Stop() error {
 	// Your Code Here (1).
-	if err := s.KvDB.Close(); err != nil {
+	if err := s.db.Close(); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(s.conf.DBPath); err != nil {
@@ -54,7 +53,7 @@ func (s *StandAloneStorage) Stop() error {
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	// Your Code Here (1).
-	txn := s.KvDB.NewTransaction(false)
+	txn := s.db.NewTransaction(false)
 	return NewStandaloneStorageReader(txn), nil
 }
 
@@ -63,14 +62,14 @@ func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) 
 	for _, m := range batch {
 		switch m.Data.(type) {
 		case storage.Put:
-			put := m.Data.(storage.Put)
-			err := engine_util.PutCF(s.KvDB, put.Cf, put.Key, put.Value)
+			putOp := m.Data.(storage.Put)
+			err := engine_util.PutCF(s.db, putOp.Cf, putOp.Key, putOp.Value)
 			if err != nil {
 				return err
 			}
 		case storage.Delete:
-			delete := m.Data.(storage.Delete)
-			err := engine_util.DeleteCF(s.KvDB, delete.Cf, delete.Key)
+			deleteOp := m.Data.(storage.Delete)
+			err := engine_util.DeleteCF(s.db, deleteOp.Cf, deleteOp.Key)
 			if err != nil {
 				return err
 			}
