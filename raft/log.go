@@ -141,7 +141,6 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 func (l *RaftLog) Append(newEntries []*pb.Entry) {
 	nextIndex := newEntries[0].Index
-	log.Println(nextIndex, l.entries, l.stabled)
 	if nextIndex <= l.stabled {
 		l.stabled = nextIndex - 1
 		l.entries = l.entries[:nextIndex-l.first]
