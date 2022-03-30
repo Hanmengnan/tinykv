@@ -116,14 +116,6 @@ func (l *RaftLog) LastIndex() uint64 {
 	}
 }
 
-func (l *RaftLog) FirstIndex() uint64 {
-	if len(l.entries) > 0 {
-		return l.entries[0].Index
-	} else {
-		return l.first
-	}
-}
-
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
@@ -158,50 +150,7 @@ func (l *RaftLog) Append(newEntries []*pb.Entry) {
 
 }
 
-// Remove 移除索引值为i之前的日志项
-func (l *RaftLog) RemoveAfter(i uint64) {
-	if i < l.committed {
-		log.Panicf("%-10s: can't remove committed log", "[ERROR]")
-	} else if i <= l.stabled {
-		l.stabled = i - 1
-	} else {
-		l.entries = l.entries[:i-l.first]
-	}
-}
-
-func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
-	first := l.FirstIndex()
-	last := l.LastIndex()
-
-	if lo > last { // 下界越界
-		return []pb.Entry{}, ErrUnavailable
-	} else {
-		if hi < first { // 取的是stabled的日志
-			entry, err := l.storage.Entries(lo, hi)
-			if err != nil { // storage 也无法取出这些日志
-				return []pb.Entry{}, err
-			} else {
-				return entry, nil
-			}
-		} else {
-			hiIndex := hi - l.first
-			if lo < first { // 下界需要去storage中去取
-				subEntries, err := l.storage.Entries(lo, first)
-				if err != nil {
-					return []pb.Entry{}, err // storage 也无法取出这些日志
-				} else {
-					subEntries = append(subEntries, l.entries[first:hiIndex]...)
-					return subEntries, nil
-				}
-			} else {
-				loIndex := lo - l.first
-				return l.entries[loIndex:hiIndex], nil
-			}
-		}
-	}
-}
-
-func (l *RaftLog) MaybeAppend(index, logTerm, committed uint64, ents []*pb.Entry) bool {
+func (l *RaftLog) MaybeAppend(index, logTerm, committed uint64, ents []*pb.Entry) (uint64, bool) {
 	// raft协议假定，当前这条日志匹配的情况下，这条日志之前的所有日志都匹配
 	if l.matchTerm(index, logTerm) {
 		lastIndex := index + uint64(len(ents))
@@ -217,9 +166,9 @@ func (l *RaftLog) MaybeAppend(index, logTerm, committed uint64, ents []*pb.Entry
 			l.Append(ents[conflictIndex-index-1:])
 		}
 		l.commitTo(min(committed, lastIndex))
-		return true
+		return lastIndex, true
 	}
-	return false
+	return 0, false
 }
 
 func (l *RaftLog) findConflict(ents []*pb.Entry) uint64 {

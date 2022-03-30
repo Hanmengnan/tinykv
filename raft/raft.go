@@ -347,14 +347,14 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleMsgBeat()
 		case pb.MessageType_MsgPropose:
 			r.handleMsgPropose(m)
-		// TODO： 收到其他节点的Append消息，会降级自身身份
+		// 收到其他节点的Append消息，会降级自身身份
 		case pb.MessageType_MsgAppend:
 			r.handleAppendEntries(m)
 		case pb.MessageType_MsgAppendResponse:
 			r.handleAppendResponse(m)
 		case pb.MessageType_MsgRequestVote:
 			r.handleRequestVote(m)
-		// TODO： 收到其他节点的心跳包，会降级自身身份
+		// 收到其他节点的心跳包，会降级自身身份
 		case pb.MessageType_MsgHeartbeat:
 			r.handleHeartbeat(m)
 		case pb.MessageType_MsgHeartbeatResponse:
@@ -454,44 +454,36 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	log.Printf("%-10s: i am node %d, i receive msg from %d, msg is %+v", "[RAPPEND]", r.id, m.From, m)
 	log.Printf("%-10s: i am node %d, my entries are %+v", "[RAPPEND]", r.id, r.RaftLog.entries)
 	if m.Term != None && m.Term < r.Term {
-		r.sendAppendResponse(m.From, true)
+		r.sendAppendResponse(m.From, true, None, None)
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
-	r.resetElectionTime()
 
-	if ok := r.RaftLog.MaybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries); ok {
+	if index, ok := r.RaftLog.MaybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries); ok {
 		log.Printf("%-10s: i am node %d,i accept append.", "[ACCEPT]", r.id)
-		r.sendAppendResponse(m.From, false)
+		logTerm, _ := r.RaftLog.Term(index)
+		r.sendAppendResponse(m.From, false, index, logTerm)
 	} else {
-		var index uint64
 		// 删除index超过leader记录的日志
 		if r.RaftLog.LastIndex() > m.Index {
 			index = m.Index
 		} else {
 			index = r.RaftLog.LastIndex()
 		}
-		//r.RaftLog.RemoveAfter(index + 1)
-
 		// 删除term超过leader记录的日志
 		for ; index >= r.RaftLog.first; index-- {
 			term, err := r.RaftLog.Term(index)
-			if term <= m.Term || err != nil {
+			if term <= m.LogTerm || err != nil {
 				break
 			}
 		}
-		//r.RaftLog.RemoveAfter(index + 1)
 		log.Printf("%-10s: i am node %d,i reject append.", "[REJECT]", r.id)
-		r.sendAppendResponse(m.From, true)
+		logTerm, _ := r.RaftLog.Term(index)
+		r.sendAppendResponse(m.From, true, index, logTerm)
 	}
 }
 
-func (r *Raft) sendAppendResponse(from uint64, reject bool) {
-	lastLogIndex := r.RaftLog.LastIndex()
-	lastLogTerm, err := r.RaftLog.Term(lastLogIndex)
-	if err != nil {
-		log.Panicf("%-10s: get lastLogTerm fail.", "[ERROR]")
-	}
+func (r *Raft) sendAppendResponse(from uint64, reject bool, lastLogIndex, lastLogTerm uint64) {
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		To:      from,
@@ -501,13 +493,11 @@ func (r *Raft) sendAppendResponse(from uint64, reject bool) {
 		LogTerm: lastLogTerm,
 		Reject:  reject,
 	}
-	// log.Printf("i am node %d, my last index is %d", r.id, r.RaftLog.LastIndex())
 	r.msgs = append(r.msgs, msg)
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
 	log.Printf("%-10s: i receive AppendResponse from %d", "[HRAPPEND]", m.From)
-	log.Printf("%+v", m)
 	if m.Reject {
 		nextLogIndex := r.RaftLog.findConflictByTerm(m.LogTerm, m.Index)
 		r.Prs[m.From].Next = max(nextLogIndex, r.RaftLog.first)
@@ -618,13 +608,11 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
-
 	msg := pb.Message{
 		MsgType: pb.MessageType_MsgHeartbeat,
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		//Commit:  r.RaftLog.committed,
 	}
 	log.Printf("%-10s: send heartbeat to %d", "[HEATBEAT]", to)
 	r.msgs = append(r.msgs, msg)
@@ -637,7 +625,6 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	r.becomeFollower(m.Term, m.From)
 	r.resetHeartBeatTime()
 	r.resetElectionTime()
-	//r.RaftLog.commitTo(m.Commit)
 	r.sendHeartbeatResponse(m.From, false)
 }
 
@@ -676,8 +663,6 @@ func (r *Raft) GetHardState() pb.HardState {
 }
 
 func (r *Raft) advanceCommit() {
-	// log.Printf("i am node %d, my last index is %d, my commit is %d", r.id, r.RaftLog.LastIndex(), r.RaftLog.committed)
-
 	lastIndex := r.RaftLog.LastIndex()
 	newCommit := false
 
