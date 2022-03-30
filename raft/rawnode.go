@@ -156,6 +156,7 @@ func (rn *RawNode) Ready() Ready {
 	}
 	if len(raft.msgs) > 0 {
 		ready.Messages = raft.msgs
+		raft.msgs = make([]pb.Message, 0)
 	}
 	if rn.IsSoftStateChanged() {
 		ready.SoftState = raft.GetSoftState()
@@ -163,7 +164,7 @@ func (rn *RawNode) Ready() Ready {
 	if rn.IsHardStateChanged() {
 		ready.HardState = raft.GetHardState()
 	}
-	rn.Raft.msgs = make([]pb.Message, 0)
+
 	if !IsEmptySnap(raft.RaftLog.pendingSnapshot) {
 		ready.Snapshot = *raft.RaftLog.pendingSnapshot
 		raft.RaftLog.pendingSnapshot = nil
@@ -174,10 +175,13 @@ func (rn *RawNode) Ready() Ready {
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
-	if hardState := rn.Raft.GetHardState(); !IsEmptyHardState(hardState) && rn.IsHardStateChanged() {
+	raft := rn.Raft
+	if hardState := raft.GetHardState(); !IsEmptyHardState(hardState) && rn.IsHardStateChanged() {
 		return true
 	}
-	raft := rn.Raft
+	if softState := raft.GetSoftState(); softState != nil && rn.IsSoftStateChanged() {
+		return true
+	}
 	if len(raft.RaftLog.unstableEntries()) > 0 || len(raft.RaftLog.nextEnts()) > 0 || len(raft.msgs) > 0 {
 		return true
 	}
@@ -231,5 +235,5 @@ func (rn *RawNode) IsHardStateChanged() bool {
 func (rn *RawNode) IsSoftStateChanged() bool {
 	preHardState := rn.NodeSoftState
 	softState := rn.Raft.GetSoftState()
-	return !(preHardState.Lead == softState.Lead && preHardState.RaftState == preHardState.RaftState)
+	return !(preHardState.Lead == softState.Lead && preHardState.RaftState == softState.RaftState)
 }

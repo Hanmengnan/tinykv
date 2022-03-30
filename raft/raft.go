@@ -196,7 +196,10 @@ func newRaft(c *Config) *Raft {
 	}
 	node.becomeFollower(0, None)
 
-	node.changeApplied(c.Applied)
+	if c.Applied > 0 {
+		node.changeApplied(c.Applied)
+	}
+
 	node.loadHardState(hardState)
 
 	return &node
