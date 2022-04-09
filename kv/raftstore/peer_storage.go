@@ -310,38 +310,38 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	// Your Code Here (2B).
 	if len(entries) > 0 {
 		// preFirstIndex 指的是not-truncated的第一条日志
-		preFirstIndex, err := ps.FirstIndex()
+		truncatedFirstIndex, err := ps.FirstIndex()
 		if err != nil {
 			return err
 		}
 		// preLastIndex 指的是not-truncated的最后一条日志
-		preLastIndex, err := ps.LastIndex()
+		truncatedLastIndex, err := ps.LastIndex()
 		if err != nil {
 			return err
 		}
-		newFirstIndex := entries[0].Index
-		newLastIndex := entries[len(entries)-1].Index
-		if newLastIndex < preFirstIndex {
+		appendFirstIndex := entries[0].Index
+		appendLastIndex := entries[len(entries)-1].Index
+
+		if appendLastIndex < truncatedFirstIndex {
 			return nil
 		}
-		if preFirstIndex > newFirstIndex {
-			entries = entries[preFirstIndex-newFirstIndex:]
+		if truncatedFirstIndex > appendFirstIndex {
+			entries = entries[truncatedFirstIndex-appendFirstIndex:]
 		}
 		regionID := ps.region.GetId()
 		for _, entry := range entries {
-			key := meta.RaftLogKey(regionID, entry.Index)
-			err = raftWB.SetMeta(key, &entry)
+			err = raftWB.SetMeta(meta.RaftLogKey(regionID, entry.Index), &entry)
 			if err != nil {
 				return err
 			}
 		}
 		// 新的日志对旧的日志进行了覆盖,被覆盖日志再之后的日志都作废了
-		if preLastIndex > newLastIndex {
-			for i := newLastIndex + 1; i <= preLastIndex; i++ {
+		if truncatedLastIndex > appendLastIndex {
+			for i := appendLastIndex + 1; i <= truncatedLastIndex; i++ {
 				raftWB.DeleteMeta(meta.RaftLogKey(regionID, i))
 			}
 		}
-		ps.raftState.LastIndex = newLastIndex
+		ps.raftState.LastIndex = appendLastIndex
 		ps.raftState.LastTerm = entries[len(entries)-1].Term
 	}
 	return nil
@@ -369,9 +369,9 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 	var result *ApplySnapResult
-	var err error = nil
 	raftWriteBatch := new(engine_util.WriteBatch)
-	ps.Append(ready.Entries, raftWriteBatch)
+	err := ps.Append(ready.Entries, raftWriteBatch)
+
 	if len(ready.Entries) > 0 {
 		LastIndex := ready.Entries[len(ready.Entries)-1].Index
 		if LastIndex > ps.raftState.LastIndex {
@@ -379,9 +379,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 			ps.raftState.LastTerm = ready.Entries[len(ready.Entries)-1].Index
 		}
 	}
+
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
+
 	err = raftWriteBatch.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
 	err = raftWriteBatch.WriteToDB(ps.Engines.Raft)
 	return result, err

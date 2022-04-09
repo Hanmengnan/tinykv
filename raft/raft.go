@@ -230,7 +230,7 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateFollower, StateCandidate:
 		r.electionElapsed++
-		log.Printf("%-10s: my electionElapsed is %d,my electionTimeout is %d", "[INFO]", r.electionElapsed, r.electionTimeout)
+		//log.Printf("%-10s: my electionElapsed is %d,my electionTimeout is %d", "[INFO]", r.electionElapsed, r.electionTimeout)
 		if r.electionElapsed >= r.electionTimeout {
 			r.resetElectionTime()
 			r.Step(pb.Message{
@@ -241,7 +241,7 @@ func (r *Raft) tick() {
 		}
 	case StateLeader:
 		r.heartbeatElapsed++
-		log.Printf("%-10s: my heartbeatElapsed is %d,my heartbeatTimeout is %d", "[INFO]", r.heartbeatElapsed, r.heartbeatTimeout)
+		//log.Printf("%-10s: my heartbeatElapsed is %d,my heartbeatTimeout is %d", "[INFO]", r.heartbeatElapsed, r.heartbeatTimeout)
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			// 这里我觉得没必要重置选举时间，因为作为leader无需选举，降级为follower之后会重置选举时间，因此在leader状态下没必要记录选举时间
 			r.resetHeartBeatTime()
@@ -267,7 +267,7 @@ func (r *Raft) resetElectionTime() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
-	log.Printf("%-10s: i am node %d, i become follower.", "[BECOME]", r.id)
+	//log.Printf("%-10s: i am node %d, i become follower.", "[BECOME]", r.id)
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
@@ -301,7 +301,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	log.Printf("%-10s: i have become leader, i am node %d", "[INFO]", r.id)
+	//log.Printf("%-10s: i have become leader, i am node %d", "[INFO]", r.id)
 	r.State = StateLeader
 	r.Lead = r.id
 	r.resetHeartBeatTime()
@@ -368,19 +368,19 @@ func (r *Raft) Step(m pb.Message) error {
 }
 
 func (r *Raft) handleMsgUp() {
-	log.Printf("%-10s: i am node %d,I receive Msgup msg.", "[MSGUP]", r.id)
+	//log.Printf("%-10s: i am node %d,I receive Msgup msg.", "[MSGUP]", r.id)
 	r.becomeCandidate()
 	if len(r.Prs) == 1 { //只有一个自己节点
 		r.becomeLeader()
 	} else {
-		log.Printf("%-10s: i am node %d ,now in term %d ,i start vote.", "[MSGUP]", r.id, r.Term)
+		//log.Printf("%-10s: i am node %d ,now in term %d ,i start vote.", "[MSGUP]", r.id, r.Term)
 		r.sendRequestVote()
 	}
 
 }
 
 func (r *Raft) handleMsgBeat() {
-	log.Printf("%-10s: I receive MsyBeat msg, i am node %d", "[MSGBEAT]", r.id)
+	//log.Printf("%-10s: I receive MsyBeat msg, i am node %d", "[MSGBEAT]", r.id)
 	for id := range r.Prs {
 		if id != r.id {
 			r.sendHeartbeat(id)
@@ -389,8 +389,8 @@ func (r *Raft) handleMsgBeat() {
 }
 
 func (r *Raft) handleMsgPropose(m pb.Message) {
-	log.Printf("%-10s: I receive Propose msg, i am node %d", "[PROPOSE]", r.id)
-	log.Printf("%-10s: my committed is %d", "[PROPOSE]", r.RaftLog.committed)
+	//log.Printf("%-10s: I receive Propose msg, i am node %d", "[PROPOSE]", r.id)
+	//log.Printf("%-10s: my committed is %d", "[PROPOSE]", r.RaftLog.committed)
 	for _, entry := range m.Entries {
 		r.RaftLog.Append([]*pb.Entry{
 			{
@@ -423,7 +423,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		log.Panicf("%-10s: a node can't sendAppend if it isn't leader.", "[ERROR]")
 		return false
 	}
-	log.Printf("%-10s: i am node %d, my entries is %+v", "[APPEND]", r.id, r.RaftLog.entries)
+	//log.Printf("%-10s: i am node %d, my entries is %+v", "[APPEND]", r.id, r.RaftLog.entries)
 
 	prevLogIndex := r.Prs[to].Next - 1
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
@@ -447,15 +447,15 @@ func (r *Raft) sendAppend(to uint64) bool {
 		Commit:  r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Printf("%-10s: i am node %d, i will send append to %d,msgs is %+v", "[APPEND]", r.id, to, r.msgs)
+	//log.Printf("%-10s: i am node %d, i will send append to %d,msgs is %+v", "[APPEND]", r.id, to, r.msgs)
 	return true
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	log.Printf("%-10s: i am node %d, i receive msg from %d, msg is %+v", "[RAPPEND]", r.id, m.From, m)
-	log.Printf("%-10s: i am node %d, my entries are %+v", "[RAPPEND]", r.id, r.RaftLog.entries)
+	//log.Printf("%-10s: i am node %d, i receive msg from %d, msg is %+v", "[RAPPEND]", r.id, m.From, m)
+	//log.Printf("%-10s: i am node %d, my entries are %+v", "[RAPPEND]", r.id, r.RaftLog.entries)
 	if m.Term != None && m.Term < r.Term {
 		r.sendAppendResponse(m.From, true, None, None)
 		return
@@ -463,7 +463,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.becomeFollower(m.Term, m.From)
 
 	if index, ok := r.RaftLog.MaybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries); ok {
-		log.Printf("%-10s: i am node %d,i accept append.", "[ACCEPT]", r.id)
+		//log.Printf("%-10s: i am node %d,i accept append.", "[ACCEPT]", r.id)
 		logTerm, _ := r.RaftLog.Term(index)
 		r.sendAppendResponse(m.From, false, index, logTerm)
 	} else {
@@ -480,7 +480,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 				break
 			}
 		}
-		log.Printf("%-10s: i am node %d,i reject append.", "[REJECT]", r.id)
+		//log.Printf("%-10s: i am node %d,i reject append.", "[REJECT]", r.id)
 		logTerm, _ := r.RaftLog.Term(index)
 		r.sendAppendResponse(m.From, true, index, logTerm)
 	}
@@ -500,7 +500,7 @@ func (r *Raft) sendAppendResponse(from uint64, reject bool, lastLogIndex, lastLo
 }
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
-	log.Printf("%-10s: i receive AppendResponse from %d", "[HRAPPEND]", m.From)
+	//log.Printf("%-10s: i receive AppendResponse from %d", "[HRAPPEND]", m.From)
 	if m.Reject {
 		nextLogIndex := r.RaftLog.findConflictByTerm(m.LogTerm, m.Index)
 		r.Prs[m.From].Next = max(nextLogIndex, r.RaftLog.first)
@@ -512,11 +512,11 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 
 	r.advanceCommit()
-	log.Printf("%-10s: i am node %d, my commit is %d", "[HRAPPEND]", r.id, r.RaftLog.committed)
+	//log.Printf("%-10s: i am node %d, my commit is %d", "[HRAPPEND]", r.id, r.RaftLog.committed)
 }
 
 func (r *Raft) sendRequestVote() {
-	log.Printf("%-10s: i am node %d, i start sending RequestVote msg", "[SVOTE]", r.id)
+	//log.Printf("%-10s: i am node %d, i start sending RequestVote msg", "[SVOTE]", r.id)
 	if r.State == StateCandidate {
 		newestIndex := r.RaftLog.LastIndex()
 		logTerm, _ := r.RaftLog.Term(newestIndex)
@@ -539,10 +539,10 @@ func (r *Raft) sendRequestVote() {
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
-	log.Printf("%-10s: i am node %d term %d my lastIndex is %d , now node %d logTerm %d index %d request vode", "[RVOTE]", r.id, r.Term, r.RaftLog.LastIndex(), m.From, m.LogTerm, m.Index)
+	//log.Printf("%-10s: i am node %d term %d my lastIndex is %d , now node %d logTerm %d index %d request vode", "[RVOTE]", r.id, r.Term, r.RaftLog.LastIndex(), m.From, m.LogTerm, m.Index)
 
 	if m.Term < r.Term { // 请求投票的节点是过时的，直接拒绝
-		log.Printf("%-10s: i vote for %d", "[RVOTE]", m.From)
+		//log.Printf("%-10s: i vote for %d", "[RVOTE]", m.From)
 		r.sendRequestVoteResponse(m.From, true)
 		return
 	} else {
@@ -558,10 +558,10 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		if canVote && (m.LogTerm > lastLogTerm || (m.LogTerm == lastLogTerm && m.Index >= lastIndex)) {
 			r.becomeFollower(m.Term, None)
 			r.sendRequestVoteResponse(m.From, false)
-			log.Printf("%-10s: i vote for %d", "[RVOTE]", m.From)
+			//log.Printf("%-10s: i vote for %d", "[RVOTE]", m.From)
 		} else {
 			r.sendRequestVoteResponse(m.From, true)
-			log.Printf("%-10s: i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", m.From, lastIndex, lastLogTerm)
+			//log.Printf("%-10s: i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", m.From, lastIndex, lastLogTerm)
 		}
 
 	}
@@ -617,14 +617,13 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		From:    r.id,
 		Term:    r.Term,
 	}
-	log.Printf("%-10s: send heartbeat to %d", "[HEATBEAT]", to)
+	//log.Printf("%-10s: send heartbeat to %d", "[HEATBEAT]", to)
 	r.msgs = append(r.msgs, msg)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	log.Printf("i am node %d, my committed is %d, leader committed is %d", r.id, r.RaftLog.committed, m.Commit)
 	r.becomeFollower(m.Term, m.From)
 	r.resetHeartBeatTime()
 	r.resetElectionTime()

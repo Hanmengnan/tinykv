@@ -272,9 +272,11 @@ func New() *Logger {
 func NewLogger(w io.Writer, prefix string) *Logger {
 	var level LogLevel
 	if l := os.Getenv("LOG_LEVEL"); len(l) != 0 {
-		level = StringToLogLevel(os.Getenv("LOG_LEVEL"))
+		//level = StringToLogLevel(os.Getenv("LOG_LEVEL"))
+		level = LOG_LEVEL_DEBUG
 	} else {
-		level = LOG_LEVEL_INFO
+		//level = LOG_LEVEL_INFO
+		level = LOG_LEVEL_DEBUG
 	}
 	return &Logger{_log: log.New(w, prefix, LstdFlags), level: level, highlighting: true}
 }
