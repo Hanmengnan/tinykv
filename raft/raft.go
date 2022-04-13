@@ -301,7 +301,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	//log.Printf("%-10s: i have become leader, i am node %d", "[INFO]", r.id)
+	log.Printf("%-10s: i have become leader, i am node %d, my peers is %+v", "[INFO]", r.id, r.Prs)
 	r.State = StateLeader
 	r.Lead = r.id
 	r.resetHeartBeatTime()
@@ -558,10 +558,10 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		if canVote && (m.LogTerm > lastLogTerm || (m.LogTerm == lastLogTerm && m.Index >= lastIndex)) {
 			r.becomeFollower(m.Term, None)
 			r.sendRequestVoteResponse(m.From, false)
-			//log.Printf("%-10s: i vote for %d", "[RVOTE]", m.From)
+			//log.Printf("%-10s: i am node %d, i vote for %d", "[RVOTE]", r.id, m.From)
 		} else {
 			r.sendRequestVoteResponse(m.From, true)
-			//log.Printf("%-10s: i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", m.From, lastIndex, lastLogTerm)
+			//log.Printf("%-10s: i am node %d, i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", r.id, m.From, lastIndex, lastLogTerm)
 		}
 
 	}

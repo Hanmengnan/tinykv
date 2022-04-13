@@ -2,7 +2,6 @@ package engine_util
 
 import (
 	"bytes"
-
 	"github.com/Connor1996/badger"
 	"github.com/golang/protobuf/proto"
 )
