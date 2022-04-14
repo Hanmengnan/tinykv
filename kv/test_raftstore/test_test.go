@@ -222,7 +222,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 				if (rand.Int() % 1000) < 500 {
 					key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
-					log.Infof("%d: client new put %v,%v\n", cli, key, value)
+					//log.Infof("%d: client new put %v,%v\n", cli, key, value)
 					cluster.MustPut([]byte(key), []byte(value))
 					last = NextValue(last, value)
 					j++
@@ -383,7 +383,6 @@ func TestOnePartition2B(t *testing.T) {
 			s2 = append(s2, p.GetStoreId())
 		}
 	}
-	log.Infof("leader is %d, s1: %+v s2: %+v", leader.Id, s1, s2)
 
 	// leader in majority, partition doesn't affect write/read
 	cluster.AddFilter(&PartitionFilter{

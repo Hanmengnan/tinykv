@@ -163,10 +163,6 @@ func (l *RaftLog) MaybeAppend(index, logTerm, committed uint64, ents []*pb.Entry
 		conflictIndex := l.findConflict(ents)
 		switch {
 		case conflictIndex == 0:
-		case conflictIndex <= l.committed:
-			return 0, false
-			// TODO: 这里该如何处理呢？
-			//log.Panicf("%-10s: entry %d conflict with committed entry ", "[ERROR]", l.committed)
 		default:
 			if conflictIndex-index-1 > uint64(len(ents)) {
 				log.Panicf("%-10s: index, %d, is out of range [%d]", "[ERROR]", conflictIndex-index-1, len(ents))

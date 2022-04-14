@@ -81,15 +81,22 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		}
 
 		if len(ready.CommittedEntries) > 0 {
+			oldProposals := d.proposals
+			batch := new(engine_util.WriteBatch)
 			for _, entry := range ready.CommittedEntries {
+				batch = d.handelCommittedEntries(&entry, batch)
 				// used in Project(3B)
 				if d.stopped {
 					return
 				}
-				batch := new(engine_util.WriteBatch)
-				d.peerStorage.applyState.AppliedIndex = entry.Index
-				batch.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
-				batch = d.handelCommittedEntries(&entry, batch)
+			}
+			d.peerStorage.applyState.AppliedIndex = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
+			batch.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+			batch.WriteToDB(d.peerStorage.Engines.Kv)
+			if len(oldProposals) > len(d.proposals) {
+				proposals := make([]*proposal, len(d.proposals))
+				copy(proposals, d.proposals)
+				d.proposals = proposals
 			}
 		}
 
@@ -121,8 +128,8 @@ func (d *peerMsgHandler) handelCommittedEntries(entry *eraftpb.Entry, batch *eng
 			return d.handleAdminRequest(entry, msg, batch)
 		}
 		if len(msg.Requests) > 0 {
-			rlog.Printf("%-10s: i am %s, this item is a normal Request", "[HENTRY]", d.Tag)
-			rlog.Printf("%-10s: i am %s, msg is %+v", "[HENTRY]", d.Tag, msg.Requests)
+			//rlog.Printf("%-10s: i am %s, this item is a normal Request", "[HENTRY]", d.Tag)
+			//rlog.Printf("%-10s: i am %s, msg is %+v", "[HENTRY]", d.Tag, msg.Requests)
 			return d.handleRequests(entry, msg, batch)
 		}
 		return batch
@@ -148,12 +155,11 @@ func (d *peerMsgHandler) handleRequests(entry *eraftpb.Entry, msg *raft_cmdpb.Ra
 	}
 	switch req.CmdType {
 	case raft_cmdpb.CmdType_Put:
-		rlog.Printf("i am %s, i put %s", d.Tag, req.Put.Key)
 		batch.SetCF(req.Put.Cf, req.Put.Key, req.Put.Value)
 	case raft_cmdpb.CmdType_Delete:
 		batch.DeleteCF(req.Delete.Cf, req.Delete.Key)
 	}
-	rlog.Printf("i am %s ****************", d.Tag)
+
 	d.handleProposal(entry, func(proposal *proposal) {
 		resp := &raft_cmdpb.RaftCmdResponse{Header: &raft_cmdpb.RaftResponseHeader{}}
 		switch req.CmdType {
@@ -195,19 +201,11 @@ func (d *peerMsgHandler) handleRequests(entry *eraftpb.Entry, msg *raft_cmdpb.Ra
 			}
 			proposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 		}
-		err := batch.WriteToDB(d.peerStorage.Engines.Kv)
-
-		if err != nil {
-			rlog.Printf("i am %s, writeToDB fail, error is %s", d.Tag, err.Error())
-			proposal.cb.Done(ErrResp(err))
-		} else {
-			proposal.cb.Done(resp)
-			if req.CmdType == raft_cmdpb.CmdType_Put {
-				rlog.Printf("i am %s ====", d.Tag)
-				val, _ := engine_util.GetCF(d.peerStorage.Engines.Kv, req.Put.Cf, req.Put.Key)
-				rlog.Printf("i am %s %s", d.Tag, val)
-			}
-		}
+		d.peerStorage.applyState.AppliedIndex = entry.Index
+		batch.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+		batch.WriteToDB(d.peerStorage.Engines.Kv)
+		batch = new(engine_util.WriteBatch)
+		proposal.cb.Done(resp)
 	})
 	return batch
 }
@@ -215,16 +213,6 @@ func (d *peerMsgHandler) handleRequests(entry *eraftpb.Entry, msg *raft_cmdpb.Ra
 func (d *peerMsgHandler) handleProposal(entry *eraftpb.Entry, handler func(proposal *proposal)) {
 	if len(d.proposals) > 0 {
 		p := d.proposals[0]
-		rlog.Printf("i am %s %+v %+v", d.Tag, entry, p)
-		for p.index < entry.Index {
-			NotifyStaleReq(entry.Term, p.cb)
-			d.proposals = d.proposals[1:]
-			if len(d.proposals) == 0 {
-				break
-			}
-			p = d.proposals[0]
-		}
-
 		if p.index == entry.Index {
 			if p.term != entry.Term {
 				NotifyStaleReq(entry.Term, p.cb)
@@ -245,7 +233,6 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 		}
 	case message.MsgTypeRaftCmd:
 		raftCMD := msg.Data.(*message.MsgRaftCmd)
-		rlog.Printf("i am %s %+v", d.Tag, raftCMD)
 		d.proposeRaftCommand(raftCMD.Request, raftCMD.Callback)
 	case message.MsgTypeTick:
 		d.onTick()
