@@ -16,10 +16,10 @@ package raft
 
 import (
 	"errors"
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"log"
 	"math/rand"
-
-	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
 // None is a placeholder node ID used when there is no leader.
@@ -287,7 +287,6 @@ func (r *Raft) becomeCandidate() {
 	r.State = StateCandidate
 	r.Term = r.Term + 1
 	r.Lead = None
-	r.Vote = r.id
 
 	r.votes = make(map[uint64]bool)
 	r.votes[r.id] = true // 投票给自己
@@ -301,7 +300,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	log.Printf("%-10s: i have become leader, i am node %d, my peers is %+v", "[INFO]", r.id, r.Prs)
+	log.Printf("%-10s: i have become leader, i am node %d", "[INFO]", r.id)
 	r.State = StateLeader
 	r.Lead = r.id
 	r.resetHeartBeatTime()
@@ -392,13 +391,11 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 	//log.Printf("%-10s: I receive Propose msg, i am node %d", "[PROPOSE]", r.id)
 	//log.Printf("%-10s: my committed is %d", "[PROPOSE]", r.RaftLog.committed)
 	for _, entry := range m.Entries {
-		r.RaftLog.Append([]*pb.Entry{
-			{
-				EntryType: pb.EntryType_EntryNormal,
-				Term:      r.Term,
-				Index:     r.RaftLog.LastIndex() + 1,
-				Data:      entry.Data,
-			},
+		r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{
+			EntryType: pb.EntryType_EntryNormal,
+			Term:      r.Term,
+			Index:     r.RaftLog.LastIndex() + 1,
+			Data:      entry.Data,
 		})
 	}
 	for id := range r.Prs {
@@ -454,33 +451,42 @@ func (r *Raft) sendAppend(to uint64) bool {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	//log.Printf("%-10s: i am node %d, i receive msg from %d, msg is %+v", "[RAPPEND]", r.id, m.From, m)
 	//log.Printf("%-10s: i am node %d, my entries are %+v", "[RAPPEND]", r.id, r.RaftLog.entries)
+	//log.Printf("%-10s: i am node %d, i recieve msg are %+v", "[RAPPEND]", r.id, m)
+
+	// 如果任期小于自己直接拒绝
 	if m.Term != None && m.Term < r.Term {
 		r.sendAppendResponse(m.From, true, None, None)
 		return
 	}
+	// 否则成为follower
 	r.becomeFollower(m.Term, m.From)
 
-	if index, ok := r.RaftLog.MaybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries); ok {
+	lastIndex := r.RaftLog.LastIndex()
+	lastTerm, _ := r.RaftLog.Term(lastIndex)
+
+	// 日志出现漏洞
+	if m.Index > r.RaftLog.LastIndex() {
+		r.sendAppendResponse(m.From, true, lastIndex, lastTerm)
+		return
+	}
+
+	// 能否append新的日志
+	if index, ok := r.RaftLog.MaybeAppend(m.Index, m.LogTerm, m.Entries); ok {
 		//log.Printf("%-10s: i am node %d,i accept append.", "[ACCEPT]", r.id)
 		logTerm, _ := r.RaftLog.Term(index)
+
+		if m.Commit > r.RaftLog.committed {
+			r.RaftLog.committed = min(m.Commit, m.Index+uint64(len(m.Entries)))
+		}
+
 		r.sendAppendResponse(m.From, false, index, logTerm)
 	} else {
-		// 删除index超过leader记录的日志
-		if r.RaftLog.LastIndex() > m.Index {
-			index = m.Index
-		} else {
-			index = r.RaftLog.LastIndex()
-		}
-		// 删除term超过leader记录的日志
-		for ; index >= r.RaftLog.first; index-- {
-			term, err := r.RaftLog.Term(index)
-			if term <= m.LogTerm || err != nil {
-				break
-			}
-		}
-		//log.Printf("%-10s: i am node %d,i reject append.", "[REJECT]", r.id)
+		//log.Printf("%-10s: i am node %d,i reject append.", "[ACCEPT]", r.id)
+		msg := &raft_cmdpb.RaftCmdRequest{}
+		msg.Unmarshal(r.RaftLog.entries[index-r.RaftLog.first].Data)
+
+		//log.Printf("%-10s: i am node %d, entry don't match index is %d, logterm is %d, the entry is %+v", "[NOTMATCH]", r.id, m.Index, m.LogTerm, msg)
 		logTerm, _ := r.RaftLog.Term(index)
 		r.sendAppendResponse(m.From, true, index, logTerm)
 	}
@@ -501,6 +507,9 @@ func (r *Raft) sendAppendResponse(from uint64, reject bool, lastLogIndex, lastLo
 
 func (r *Raft) handleAppendResponse(m pb.Message) {
 	//log.Printf("%-10s: i receive AppendResponse from %d", "[HRAPPEND]", m.From)
+	if m.Term != None && m.Term < r.Term {
+		return
+	}
 	if m.Reject {
 		nextLogIndex := r.RaftLog.findConflictByTerm(m.LogTerm, m.Index)
 		r.Prs[m.From].Next = max(nextLogIndex, r.RaftLog.first)
@@ -516,7 +525,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 }
 
 func (r *Raft) sendRequestVote() {
-	//log.Printf("%-10s: i am node %d, i start sending RequestVote msg", "[SVOTE]", r.id)
+	//log.Printf("%-10s: i am node %d, term is %d, i start sending RequestVote msg", "[SVOTE]", r.id, r.Term)
 	if r.State == StateCandidate {
 		newestIndex := r.RaftLog.LastIndex()
 		logTerm, _ := r.RaftLog.Term(newestIndex)
@@ -539,10 +548,7 @@ func (r *Raft) sendRequestVote() {
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
-	//log.Printf("%-10s: i am node %d term %d my lastIndex is %d , now node %d logTerm %d index %d request vode", "[RVOTE]", r.id, r.Term, r.RaftLog.LastIndex(), m.From, m.LogTerm, m.Index)
-
-	if m.Term < r.Term { // 请求投票的节点是过时的，直接拒绝
-		//log.Printf("%-10s: i vote for %d", "[RVOTE]", m.From)
+	if m.Term != None && m.Term < r.Term { // 请求投票的节点是过时的，直接拒绝
 		r.sendRequestVoteResponse(m.From, true)
 		return
 	} else {
@@ -558,7 +564,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		if canVote && (m.LogTerm > lastLogTerm || (m.LogTerm == lastLogTerm && m.Index >= lastIndex)) {
 			r.becomeFollower(m.Term, None)
 			r.sendRequestVoteResponse(m.From, false)
-			//log.Printf("%-10s: i am node %d, i vote for %d", "[RVOTE]", r.id, m.From)
+			log.Printf("%-10s: i am node %d, i vote for %d", "[RVOTE]", r.id, m.From)
 		} else {
 			r.sendRequestVoteResponse(m.From, true)
 			//log.Printf("%-10s: i am node %d, i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", r.id, m.From, lastIndex, lastLogTerm)
@@ -617,13 +623,18 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		From:    r.id,
 		Term:    r.Term,
 	}
-	//log.Printf("%-10s: send heartbeat to %d", "[HEATBEAT]", to)
+	//log.Printf("%-10s: i am node %d term is %d send heartbeat to %d", "[HEATBEAT]", r.id, r.Term, to)
 	r.msgs = append(r.msgs, msg)
 }
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	log.Printf("%-10s: i am node %d term is %d revieve heartbeat from %d", "[HEATBEAT]", r.id, r.Term, m.From)
+	if m.Term != None && m.Term < r.Term {
+		r.sendHeartbeatResponse(m.From, true)
+		return
+	}
 	r.becomeFollower(m.Term, m.From)
 	r.resetHeartBeatTime()
 	r.resetElectionTime()

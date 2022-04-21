@@ -155,6 +155,7 @@ func (d *peerMsgHandler) handleRequests(entry *eraftpb.Entry, msg *raft_cmdpb.Ra
 	}
 	switch req.CmdType {
 	case raft_cmdpb.CmdType_Put:
+		//rlog.Printf("%-10s: i am %s put key is %s, value is %s", "[PUT]", d.Tag, string(req.Put.Key), string(req.Put.Value))
 		batch.SetCF(req.Put.Cf, req.Put.Key, req.Put.Value)
 	case raft_cmdpb.CmdType_Delete:
 		batch.DeleteCF(req.Delete.Cf, req.Delete.Key)
@@ -353,6 +354,8 @@ func (d *peerMsgHandler) proposeRequests(msg *raft_cmdpb.RaftCmdRequest, cb *mes
 		cb.Done(ErrResp(err))
 		log.Panicf("%-10s: key %v not in the region", "[ERROR]", key)
 	}
+
+	//rlog.Printf("%-10s: i am %s, requests is %+v, propose key is %d.", "[PROPOESE]", d.Tag, req, key)
 
 	data, err := msg.Marshal()
 	if err != nil {

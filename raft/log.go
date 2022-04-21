@@ -129,7 +129,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if i > last {
 		return 0, ErrUnavailable
 	}
-	if i <= l.stabled {
+	if i < l.first {
 		return l.storage.Term(i)
 	} else {
 		index := i - l.first
@@ -137,54 +137,44 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 }
 
-func (l *RaftLog) Append(newEntries []*pb.Entry) {
-	nextIndex := newEntries[0].Index
-	if nextIndex <= l.stabled {
-		l.stabled = nextIndex - 1
-		l.entries = l.entries[:nextIndex-l.first]
-		for _, item := range newEntries {
-			l.entries = append(l.entries, *item)
-		}
-	} else {
-		if nextIndex < l.LastIndex() {
-			l.entries = l.entries[:nextIndex]
-		}
-		for _, item := range newEntries {
-			l.entries = append(l.entries, *item)
+func (l *RaftLog) MaybeAppend(index, logTerm uint64, ents []*pb.Entry) (uint64, bool) {
+	if index >= l.first {
+		wantTerm, _ := l.Term(index)
+		// 进行匹配
+		if wantTerm == logTerm {
+			//log.Printf("%-10s: index term is matched.", "[MAPPEND]")
+		} else {
+			// 不匹配说明从wantTerm开始的日志就是错误的，需要找到wantTerm的第一条日志重新匹配
+
+			for i := l.first; i < index; i++ {
+				if term, err := l.Term(i); err != nil && term == wantTerm {
+					return i, false
+				}
+			}
+			return l.first, false
 		}
 	}
-
-}
-
-func (l *RaftLog) MaybeAppend(index, logTerm, committed uint64, ents []*pb.Entry) (uint64, bool) {
+	// 此时为下列情况之一
+	// 1. msg.index< l.firstIndex 无法匹配
+	// 2. msg.index 匹配成功
+	// 将后续日志进行扩展
 	// raft协议假定，当前这条日志匹配的情况下，这条日志之前的所有日志都匹配
-	if l.matchTerm(index, logTerm) {
-		lastIndex := index + uint64(len(ents))
-		conflictIndex := l.findConflict(ents)
-		switch {
-		case conflictIndex == 0:
-		default:
-			if conflictIndex-index-1 > uint64(len(ents)) {
-				log.Panicf("%-10s: index, %d, is out of range [%d]", "[ERROR]", conflictIndex-index-1, len(ents))
-			}
-			l.Append(ents[conflictIndex-index-1:])
-		}
-		l.commitTo(min(committed, lastIndex))
-		return lastIndex, true
-	}
-	return 0, false
-}
 
-func (l *RaftLog) findConflict(ents []*pb.Entry) uint64 {
-	for _, ne := range ents {
-		if !l.matchTerm(ne.Index, ne.Term) {
-			if ne.Index <= l.LastIndex() {
-				log.Printf("%-10s: found conflict at index %d.", "[CONFICT]", ne.Index)
+	for _, ent := range ents {
+		if ent.Index < l.first {
+			continue
+		}
+		if ent.Index <= l.LastIndex() {
+			if term, _ := l.Term(ent.Index); term != ent.Term {
+				l.entries[ent.Index-l.first] = *ent
+				l.entries = l.entries[:ent.Index-l.first+1]
+				l.stabled = min(l.stabled, ent.Index-1)
 			}
-			return ne.Index
+		} else {
+			l.entries = append(l.entries, *ent)
 		}
 	}
-	return 0
+	return l.LastIndex(), true
 }
 
 func (l *RaftLog) findConflictByTerm(index uint64, term uint64) uint64 {
@@ -213,16 +203,12 @@ func (l *RaftLog) findConflictByTerm(index uint64, term uint64) uint64 {
 func (l *RaftLog) matchTerm(index, term uint64) bool {
 	t, err := l.Term(index)
 	if err != nil {
+		log.Printf("term of index %d is unavailable， first index is %d ,last is %d", index, l.first, l.LastIndex())
 		return false
 	}
-	return t == term
-}
-
-func (l *RaftLog) commitTo(commit uint64) {
-	if l.committed < commit {
-		if l.LastIndex() < commit {
-			log.Panicf("%-10s: tocommit(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", "[ERROR]", commit, l.LastIndex())
-		}
-		l.committed = commit
+	if t != term {
+		log.Printf("term is not equal, got is %d, want is %d", t, term)
 	}
+
+	return t == term
 }
