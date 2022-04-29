@@ -14,10 +14,10 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
-	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
 	rlog "log"
+	"reflect"
 	"time"
 )
 
@@ -62,22 +62,27 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if d.peer.RaftGroup.HasReady() {
 		ready := d.peer.RaftGroup.Ready()
 		// 1. Write HardState, Entries, and Snapshot to persistent storage.
+		// 3. Apply Snapshot (if any) and CommittedEntries to the state machine.
 		res, err := d.peerStorage.SaveReadyState(&ready)
 		if err != nil {
 			rlog.Panicf("%-10s: save ready state fail.", "[ERROR]")
 		}
 		if res != nil {
 			// TODO:
+			if !reflect.DeepEqual(res.PrevRegion, res.Region) {
+				d.peerStorage.SetRegion(res.Region)
+				storeMeta := d.ctx.storeMeta
+				storeMeta.Lock()
+				storeMeta.regions[res.Region.Id] = res.Region
+				storeMeta.regionRanges.Delete(&regionItem{region: res.PrevRegion})
+				storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: res.Region})
+				storeMeta.Unlock()
+			}
 		}
 
 		// 2. Send all Messages to the nodes named in the To field.
 		if len(ready.Messages) > 0 {
 			d.Send(d.ctx.trans, ready.Messages)
-		}
-
-		// 3. Apply Snapshot (if any) and CommittedEntries to the state machine.
-		if !raft.IsEmptySnap(&ready.Snapshot) {
-			rlog.Printf("%-10s: snapshot is not empty", "[HREADY]")
 		}
 
 		if len(ready.CommittedEntries) > 0 {
@@ -108,7 +113,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 func (d *peerMsgHandler) handelCommittedEntries(entry *eraftpb.Entry, batch *engine_util.WriteBatch) *engine_util.WriteBatch {
 	// If any committed Entry has Type EntryType_EntryConfChange, call Node.ApplyConfChange()
 	if entry.EntryType == eraftpb.EntryType_EntryConfChange {
-		// TODO:
 		confChange := &eraftpb.ConfChange{}
 		err := confChange.Unmarshal(entry.Data)
 		if err != nil {
@@ -123,13 +127,11 @@ func (d *peerMsgHandler) handelCommittedEntries(entry *eraftpb.Entry, batch *eng
 		}
 
 		if msg.AdminRequest != nil {
-			rlog.Printf("%-10s: i am %s, this item is an adminRequest", "[HENTRY]", d.Tag)
-			rlog.Printf("%-10s: i am %s, msg is %+v", "[HENTRY]", d.Tag, msg.AdminRequest)
+			//rlog.Printf("%-10s: i am %s, this item is an adminRequest", "[HENTRY]", d.Tag)
+			//rlog.Printf("%-10s: i am %s, msg is %+v", "[HENTRY]", d.Tag, msg.AdminRequest)
 			return d.handleAdminRequest(entry, msg, batch)
 		}
 		if len(msg.Requests) > 0 {
-			//rlog.Printf("%-10s: i am %s, this item is a normal Request", "[HENTRY]", d.Tag)
-			//rlog.Printf("%-10s: i am %s, msg is %+v", "[HENTRY]", d.Tag, msg.Requests)
 			return d.handleRequests(entry, msg, batch)
 		}
 		return batch
@@ -137,7 +139,22 @@ func (d *peerMsgHandler) handelCommittedEntries(entry *eraftpb.Entry, batch *eng
 }
 
 func (d *peerMsgHandler) handleAdminRequest(entry *eraftpb.Entry, msg *raft_cmdpb.RaftCmdRequest, batch *engine_util.WriteBatch) *engine_util.WriteBatch {
-	// TODO:
+	req := msg.AdminRequest
+	switch msg.AdminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_ChangePeer:
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		compact := req.GetCompactLog()
+		applyState := d.peerStorage.applyState
+		if compact.CompactIndex >= applyState.TruncatedState.Index {
+			//rlog.Printf("%-10s: i am %s, i start compact log %d", "[HANDLE]", d.Tag, compact.CompactIndex)
+			d.peerStorage.applyState.TruncatedState.Index = compact.CompactIndex
+			d.peerStorage.applyState.TruncatedState.Term = compact.CompactTerm
+			batch.SetMeta(meta.ApplyStateKey(d.regionId), applyState)
+			d.ScheduleCompactLog(d.peerStorage.applyState.TruncatedState.Index)
+		}
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+	case raft_cmdpb.AdminCmdType_Split:
+	}
 	return batch
 }
 
@@ -321,6 +338,7 @@ func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest, cb 
 		if err != nil {
 			panic(err)
 		}
+		rlog.Printf("%-10s: i am %s, i propose compactlog, the msg is %+v", "[PROPOSE]", d.Tag, msg)
 		d.RaftGroup.Propose(data)
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 		d.RaftGroup.TransferLeader(req.TransferLeader.Peer.Id)
@@ -354,9 +372,7 @@ func (d *peerMsgHandler) proposeRequests(msg *raft_cmdpb.RaftCmdRequest, cb *mes
 		cb.Done(ErrResp(err))
 		log.Panicf("%-10s: key %v not in the region", "[ERROR]", key)
 	}
-
 	//rlog.Printf("%-10s: i am %s, requests is %+v, propose key is %d.", "[PROPOESE]", d.Tag, req, key)
-
 	data, err := msg.Marshal()
 	if err != nil {
 		log.Panicf("%-10s: Marshal fail when proposeRaftCommand.", "[ERROR]")

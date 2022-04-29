@@ -271,11 +271,6 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.State = StateFollower
 	r.Term = term
 	r.Lead = lead
-	// TODO: 重置以下字段是否有必要
-	r.Vote = None
-	//r.votes = make(map[uint64]bool)
-
-	// TODO: Prs,msgs字段是否需要处理？
 
 	r.resetHeartBeatTime()
 	r.resetElectionTime()
@@ -305,7 +300,6 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.resetHeartBeatTime()
 	r.resetElectionTime()
-	// TODO: 这步到底加不加？
 	r.Step(pb.Message{MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{}}})
 }
 
@@ -425,7 +419,11 @@ func (r *Raft) sendAppend(to uint64) bool {
 	prevLogIndex := r.Prs[to].Next - 1
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 	if err != nil {
-		log.Printf("%-10s: get prevLogTerm fail.", "[ERROR]")
+		log.Printf("%-10s: get %d's %d prevLogTerm fail.", "[ERROR]", to, prevLogIndex)
+		if err == ErrCompacted {
+			r.sendSnapshot(to)
+		}
+		return false
 	}
 
 	entities := make([]*pb.Entry, 0)
@@ -511,9 +509,11 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		return
 	}
 	if m.Reject {
-		nextLogIndex := r.RaftLog.findConflictByTerm(m.LogTerm, m.Index)
-		r.Prs[m.From].Next = max(nextLogIndex, r.RaftLog.first)
-		r.Prs[m.From].Match = r.Prs[m.From].Next - 1
+		index := m.Index
+		if m.Term != None {
+			index = r.RaftLog.findConflictByTerm(m.LogTerm, m.Index)
+		}
+		r.Prs[m.From].Next = max(index, r.RaftLog.first)
 		r.sendAppend(m.From)
 	} else {
 		r.Prs[m.From].Next = m.Index + 1
@@ -551,25 +551,30 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 	if m.Term != None && m.Term < r.Term { // 请求投票的节点是过时的，直接拒绝
 		r.sendRequestVoteResponse(m.From, true)
 		return
-	} else {
-		var canVote bool
-		if m.Term > r.Term { // 请求投票的任期更新，解除对上一轮投票节点的青睐
-			r.becomeFollower(m.Term, None)
-			canVote = true
-		} else {
-			canVote = r.Vote == None && r.Lead == None || r.Vote == m.From // 尚未为任何节点投票，则每个节点都可以获得我的支持。
-		}
-		lastIndex := r.RaftLog.LastIndex()
-		lastLogTerm, _ := r.RaftLog.Term(lastIndex)
-		if canVote && (m.LogTerm > lastLogTerm || (m.LogTerm == lastLogTerm && m.Index >= lastIndex)) {
-			r.becomeFollower(m.Term, None)
+	}
+
+	lastIndex := r.RaftLog.LastIndex()
+	lastLogTerm, _ := r.RaftLog.Term(lastIndex)
+
+	upToDate := m.LogTerm > lastLogTerm || (m.LogTerm == lastLogTerm && m.Index >= lastIndex) // 日志并不比自己落后
+	canVote := r.Vote == None && r.Lead == None || r.Vote == m.From                           // 尚未为任何节点投票，则每个节点都可以获得我的支持。
+
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		if upToDate {
 			r.sendRequestVoteResponse(m.From, false)
-			log.Printf("%-10s: i am node %d, i vote for %d", "[RVOTE]", r.id, m.From)
 		} else {
 			r.sendRequestVoteResponse(m.From, true)
-			//log.Printf("%-10s: i am node %d, i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", r.id, m.From, lastIndex, lastLogTerm)
 		}
+		return
+	}
 
+	if canVote && upToDate {
+		r.sendRequestVoteResponse(m.From, false)
+		//log.Printf("%-10s: i am node %d, i vote for %d", "[RVOTE]", r.id, m.From)
+	} else {
+		r.sendRequestVoteResponse(m.From, true)
+		//log.Printf("%-10s: i am node %d, i don't vote for %d, because my lastIndex is %d, lastTerm is %d", "[RVOTE]", r.id, m.From, lastIndex, lastLogTerm)
 	}
 }
 
@@ -609,9 +614,45 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	}
 }
 
+func (r *Raft) sendSnapshot(to uint64) {
+	snapshot, err := r.RaftLog.storage.Snapshot()
+	if err != nil {
+		log.Printf("%-10s: snapshot have not generated", "[ERROR]")
+		return
+	}
+	msg := pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		To:       to,
+		From:     r.id,
+		Term:     r.Term,
+		Snapshot: &snapshot,
+	}
+	r.msgs = append(r.msgs, msg)
+	r.Prs[to].Next = snapshot.Metadata.Index + 1
+}
+
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	meta := m.Snapshot.Metadata
+	//log.Printf("%-10s: i am %d, i revieve snapshot from %d, my commit is %d, meta index is %d.", "[SNAPSHOT]", r.id, m.From, r.RaftLog.committed, meta.Index)
+	if meta.Index < r.RaftLog.committed {
+		r.sendAppendResponse(m.From, false, r.RaftLog.committed, None)
+		return
+	}
+	r.becomeFollower(max(r.Term, m.Term), m.From)
+	r.RaftLog.entries = nil
+	r.RaftLog.first = meta.Index + 1
+	r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.stabled = meta.Index, meta.Index, meta.Index
+	r.Prs = make(map[uint64]*Progress)
+	//log.Printf("%-10s: i am %d, i clear peers", "[HSNAPSHOT]", r.id)
+	for _, peer := range meta.ConfState.Nodes {
+		r.Prs[peer] = &Progress{
+			Next: r.RaftLog.LastIndex(),
+		}
+	}
+	r.RaftLog.pendingSnapshot = m.Snapshot
+	r.sendAppendResponse(m.From, false, r.RaftLog.LastIndex(), None)
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -630,7 +671,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	log.Printf("%-10s: i am node %d term is %d revieve heartbeat from %d", "[HEATBEAT]", r.id, r.Term, m.From)
+	//log.Printf("%-10s: i am node %d term is %d revieve heartbeat from %d", "[HEATBEAT]", r.id, r.Term, m.From)
 	if m.Term != None && m.Term < r.Term {
 		r.sendHeartbeatResponse(m.From, true)
 		return

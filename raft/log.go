@@ -86,6 +86,7 @@ func (l *RaftLog) maybeCompact() {
 		compactedEntries := l.entries[storageFirstIndex-l.first:]
 		l.entries = make([]pb.Entry, len(compactedEntries))
 		copy(l.entries, compactedEntries)
+		l.first = storageFirstIndex
 	}
 }
 
@@ -107,6 +108,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
 	if len(l.entries) > 0 {
+		//log.Printf("%-10s: applied is %d, first is %d", "[NEXTEN]", l.applied, l.first)
 		return l.entries[l.applied-l.first+1 : l.committed-l.first+1]
 	}
 	return nil
@@ -125,16 +127,23 @@ func (l *RaftLog) LastIndex() uint64 {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	last := l.LastIndex()
-	if i > last {
+	if i > l.LastIndex() {
 		return 0, ErrUnavailable
 	}
-	if i < l.first {
-		return l.storage.Term(i)
-	} else {
-		index := i - l.first
-		return l.entries[index].Term, nil
+	if i >= l.first {
+		return l.entries[i-l.first].Term, nil
 	}
+
+	term, err := l.storage.Term(i)
+	if err == ErrUnavailable && !IsEmptySnap(l.pendingSnapshot) {
+		if i == l.pendingSnapshot.Metadata.Index {
+			term = l.pendingSnapshot.Metadata.Term
+			err = nil
+		} else if i < l.pendingSnapshot.Metadata.Index {
+			err = ErrCompacted
+		}
+	}
+	return term, err
 }
 
 func (l *RaftLog) MaybeAppend(index, logTerm uint64, ents []*pb.Entry) (uint64, bool) {

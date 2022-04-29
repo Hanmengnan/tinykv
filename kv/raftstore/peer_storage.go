@@ -3,6 +3,7 @@ package raftstore
 import (
 	"bytes"
 	"fmt"
+	rlog "log"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -360,7 +361,38 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+	if ps.isInitialized() {
+		ps.clearMeta(kvWB, raftWB)
+		ps.clearExtraData(snapData.Region)
+	}
+	metaData := snapshot.GetMetadata()
+	index, term := metaData.GetIndex(), metaData.GetTerm()
+	// raftState 在这里修改，是因为下面还会根据entry再进行判断更改
+	ps.raftState.LastIndex = index
+	ps.raftState.LastTerm = term
+	ps.applyState.AppliedIndex = index
+	ps.applyState.TruncatedState.Index = index
+	ps.applyState.TruncatedState.Term = term
+	ps.snapState.StateType = snap.SnapState_Applying
+	err := kvWB.SetMeta(meta.ApplyStateKey(ps.region.GetId()), ps.applyState)
+	if err != nil {
+		rlog.Printf("kv set meta fail")
+	}
+	ch := make(chan bool, 1)
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: snapData.Region.GetId(),
+		Notifier: ch,
+		SnapMeta: metaData,
+		StartKey: snapData.Region.GetStartKey(),
+		EndKey:   snapData.Region.GetEndKey(),
+	}
+	<-ch
+	res := &ApplySnapResult{
+		PrevRegion: ps.region,
+		Region:     snapData.Region,
+	}
+	meta.WriteRegionState(kvWB, snapData.Region, rspb.PeerState_Normal)
+	return res, nil
 }
 
 //Save memory states to disk.
@@ -368,24 +400,39 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	var result *ApplySnapResult
-	raftWriteBatch := new(engine_util.WriteBatch)
-	err := ps.Append(ready.Entries, raftWriteBatch)
+	raftWriteBatch, kvWriteBatch := new(engine_util.WriteBatch), new(engine_util.WriteBatch)
 
-	if len(ready.Entries) > 0 {
-		LastIndex := ready.Entries[len(ready.Entries)-1].Index
-		if LastIndex > ps.raftState.LastIndex {
-			ps.raftState.LastIndex = LastIndex
-			ps.raftState.LastTerm = ready.Entries[len(ready.Entries)-1].Index
+	// snapshot
+	var result *ApplySnapResult
+	var err error
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		result, err = ps.ApplySnapshot(&ready.Snapshot, kvWriteBatch, raftWriteBatch)
+		if err != nil {
+			rlog.Printf("apply snapshot fail")
+		}
+		err = kvWriteBatch.WriteToDB(ps.Engines.Kv)
+		if err != nil {
+			rlog.Printf("kv write to db fail")
 		}
 	}
-
+	// entries
+	err = ps.Append(ready.Entries, raftWriteBatch)
+	if err != nil {
+		rlog.Printf("append entries fail")
+	}
+	// RaftLocalState
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-
 	err = raftWriteBatch.SetMeta(meta.RaftStateKey(ps.region.GetId()), ps.raftState)
+	if err != nil {
+		rlog.Printf("raft set meta fail")
+	}
+
 	err = raftWriteBatch.WriteToDB(ps.Engines.Raft)
+	if err != nil {
+		rlog.Printf("raft write to db fail")
+	}
 	return result, err
 }
 
